@@ -18,8 +18,21 @@ using namespace std;
 
 default_random_engine randomEngine(239);
 
-void printPlot(char* name, vector<float> values, int width = 700, int height = 700) {
-    int n = values.size();
+float logCnk10(int n, int k) {
+    assert (n >= k && n >= 0 && k >= 0);
+    float res = 0.0f;
+    for (int i = 1; i <= k; i++) {
+        res += log10(n - i + 1) - log(i);
+    }
+    return res;
+}
+
+void printPlot(const char* name, vector<float> values, int width = 700, int height = 700) {
+    int offsetW = 2;
+    int offsetH = 2;
+    width -= 2 * offsetW;
+    height -= 2 * offsetH;
+    size_t n = values.size();
     float minV = values[n - 1];
     float maxV = values[n - 1];
     for (float val : values) {
@@ -29,10 +42,10 @@ void printPlot(char* name, vector<float> values, int width = 700, int height = 7
     Scalar col(255, 100, 100);
     Mat plot = Mat::zeros(width, height, CV_32FC3);
     for (int i = 0; i < n; i++) {
-        int fromX = i * width / n;
-        int toX = (i + 1) * width / n;
-        float normalized = values[i] - minV / maxV;
-        rectangle(plot, Point2f(fromX, height), Point2f(toX, height * (1 - normalized)), col, FILLED);
+        size_t fromX = i * width / n;
+        size_t toX = (i + 1) * width / n;
+        float normalized = (values[i] - minV) / (maxV - minV);
+        rectangle(plot, Point2f(offsetW + fromX, offsetH + height), Point2f(offsetW + toX, offsetH + height * (1 - normalized)), col, FILLED);
     }
     imshow(name, plot);
 }
@@ -95,12 +108,26 @@ pair<Size, Mat> getPerspectiveSizeAndMovement(Size img1, Size img2, Mat H) {
             0, 1, vy,
             0, 0, 1
     };
-    return pair<Size, Mat>(Size(maxX - minX, maxY - minY), Mat(3, 3, CV_32FC1, movement).clone());
+    return pair<Size, Mat>(Size((int) (maxX - minX), (int) (maxY - minY)), Mat(3, 3, CV_32FC1, movement).clone());
 }
 
 enum RANSAC_TASK {
     HOMOGRAPHY_TASK
 };
+
+template<typename X>
+vector<X> takeRandomValues(vector<X> values, int n) {
+    vector<X> result;
+    vector<int> indexes;
+    for (int i = 0; i < values.size(); i++) {
+        indexes.push_back(i);
+    }
+    shuffle(indexes.begin(), indexes.end(), randomEngine);
+    for (int i = 0; i < n; i++) {
+        result.push_back(values[indexes[i]]);
+    }
+    return result;
+}
 
 //X - point type
 //M - model type
@@ -111,83 +138,69 @@ pair<M, vector<bool>> ransacContrario(vector<X> points, int minPointsCount,
         function<M(vector<X>)> createModelFoo, function<float(M, X)> rankingFoo,
         RANSAC_TASK taskType, float wholeArea, int itersCount = 100) {
 
-    assert (points.size() > minPointsCount);
+    int n = points.size();
+    assert (n > minPointsCount);
 
-    float maxInliers = 0;
     M bestModel;
-    float bestThreshold;
+    float bestThreshold = -1;
+    int bestInliers = -1;
     for (int iter = 0; iter < itersCount; iter++) {
-        vector<X> curPoints;
+        M model = createModelFoo(takeRandomValues(points, minPointsCount));
 
-        vector<int> indexes;
-        for (int i = 0; i < points.size(); i++) {
-            indexes.push_back(i);
-        }
-        shuffle(indexes.begin(), indexes.end(), randomEngine);
-        for (int i = 0; i < minPointsCount; i++) {
-            curPoints.push_back(points[indexes[i]]);
-        }
-
-        M model = createModelFoo(curPoints);
         vector<float> distances;
-        for (int i = 0; i < points.size(); i++) {
+        for (int i = 0; i < n; i++) {
             distances.push_back(rankingFoo(model, points[i]));
         }
         sort(distances.begin(), distances.end());
 
-        int bestInliers;
-        float bestThreshold;
-        float minProbability = -1;
-        cout << "Probs: ";//DEBUG
-        vector<float> probs;
-        for (int i = 4; i < distances.size(); i++) {
-            float curThreshold = distances[i];
-            int count = 0;
-            for (float rank : distances) {
-                if (rank <= curThreshold) {
-                    count++;
-                } else {
-                    break;
-                }
-            }
+        float minProbability = FLT_MAX;
+        float bestModelThreshold = -1;
+        int bestModelInliers = -1;
+        int inliers = 0;
+        for (int i = 0; i < distances.size(); i++) {
+            float threshold = distances[i];
+            inliers++;
             float probability;
             switch (taskType) {
                 case (HOMOGRAPHY_TASK) : {
-                    float r = curThreshold;
-                    probability = (float) (count * (M_PI * r * r) / wholeArea);
+                    float r = threshold;
+                    float pi = (float) M_PI;
+                    float p = pi * r * r / wholeArea;
+                    if (p <= 1.0f/4.0f) {
+                        int k = inliers;
+                        probability = logCnk10(n, k) + log10(p) * k + log10(1 - p) * (n - k);
+                    } else {
+                        probability = FLT_MAX;
+                    }
                     break;
                 }
                 default : {
                     assert (false);
                 }
             }
-            cout << " " << count << "/" << probability;//DEBUG
-            probs.push_back(probability);
-            if (minProbability == -1 || probability < minProbability) {
+            if (probability < minProbability) {
                 minProbability = probability;
-                bestThreshold = curThreshold;
-                bestInliers = count;
-                cout << "!";//DEBUG
+                bestModelThreshold = threshold;
+                bestModelInliers = inliers;
             }
         }
-        printPlot("Probabilities", probs);//DEBUG
-        waitKey();
-        cout << endl;//DEBUG
 
-        if (bestInliers > maxInliers) {
-            maxInliers = bestInliers;
+        if (bestModelInliers > bestInliers || bestInliers == -1) {
             bestModel = model;
+            bestThreshold = bestModelThreshold;
+            bestInliers = bestModelInliers;
         }
     }
-    vector<bool> isInlier(points.size(), false);
-    for (int i = 0; i < points.size(); i++) {
+
+    vector<bool> isInlier(n, false);
+    for (int i = 0; i < n; i++) {
         X point = points[i];
         if (rankingFoo(bestModel, point) <= bestThreshold) {
             isInlier[i] = true;
         }
     }
     vector<X> inliers;
-    for (int i = 0; i < points.size(); i++) {
+    for (int i = 0; i < n; i++) {
         if (isInlier[i]) {
             inliers.push_back(points[i]);
         }
