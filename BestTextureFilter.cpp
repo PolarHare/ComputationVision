@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <iostream>
+#include <memory>
 #include "opencv2/core.hpp"
 #include "opencv2/core/core.hpp"
 #include "opencv2/core/mat.hpp"
@@ -27,7 +28,7 @@ float logCnk10(int n, int k) {
     return res;
 }
 
-void printPlot(const char* name, vector<float> values, int width = 700, int height = 700) {
+void printPlot(const char *name, vector<float> values, int width = 700, int height = 700) {
     int offsetW = 2;
     int offsetH = 2;
     width -= 2 * offsetW;
@@ -73,11 +74,29 @@ void drawCirclesWithDist(vector<KeyPoint> p1, vector<KeyPoint> p2, vector<DMatch
     }
 }
 
-Mat scaleToFit(Mat img, int targetHeight) {
+Mat scaleToFit(Mat img, int targetHeight = 700) {
     float scale = targetHeight * 1.0f / img.rows;
     Mat resized;
     resize(img, resized, Size((int) (img.cols * scale), (int) (img.rows * scale)));
     return resized;
+}
+
+void showImagesWithSwitching(const char *name, Mat images[], int count, int width = 700) {
+    int i = 0;
+    int key;
+    const int ESC_KEY = 1048603;
+    const int SPACE_KEY = 1048608;
+    do {
+        imshow(name, scaleToFit(images[i], width));
+        key = waitKey();
+        char keyChar = (char) key;
+        if (key == SPACE_KEY) {
+            i = (i + 1) % count;
+        } else if (keyChar - '0' >= 1 && keyChar - '0' <= min(9, count)) {
+            i = keyChar - '1';
+        }
+    } while (key != ESC_KEY);
+
 }
 
 pair<Size, Mat> getPerspectiveSizeAndMovement(Size img1, Size img2, Mat H) {
@@ -114,6 +133,8 @@ pair<Size, Mat> getPerspectiveSizeAndMovement(Size img1, Size img2, Mat H) {
 enum RANSAC_TASK {
     HOMOGRAPHY_TASK
 };
+
+Mat mergeByBestContrast(Mat img1, Mat img2, Mat move, Mat homography, Size perspectiveSize);
 
 template<typename X>
 vector<X> takeRandomValues(vector<X> values, int n) {
@@ -166,7 +187,7 @@ pair<M, vector<bool>> ransacContrario(vector<X> points, int minPointsCount,
                     float r = threshold;
                     float pi = (float) M_PI;
                     float p = pi * r * r / wholeArea;
-                    if (p <= 1.0f/4.0f) {
+                    if (p <= 1.0f / 4.0f) {
                         int k = inliers;
                         probability = logCnk10(n, k) + log10(p) * k + log10(1 - p) * (n - k);
                     } else {
@@ -330,25 +351,74 @@ int main(int argc, char **argv) {
 
     warpPerspective(imgs[0], perspective12, move * H, perspective12.size(), INTER_LINEAR, BORDER_CONSTANT, 0);
     warpPerspective(imgs[1], perspective12, move, perspective12.size(), INTER_LINEAR, BORDER_TRANSPARENT, 0);
-    drawCirclesWithDist(keyPs[0], keyPs[1], goodMatches, isInlier, perspective12, move * H, move);
+    Mat perspective12WithMatches = perspective12.clone();
+    drawCirclesWithDist(keyPs[0], keyPs[1], goodMatches, isInlier, perspective12WithMatches, move * H, move);
 
     warpPerspective(imgs[1], perspective21, move, perspective21.size(), INTER_LINEAR, BORDER_CONSTANT, 0);
     warpPerspective(imgs[0], perspective21, move * H, perspective21.size(), INTER_LINEAR, BORDER_TRANSPARENT, 0);
-    drawCirclesWithDist(keyPs[0], keyPs[1], goodMatches, isInlier, perspective21, move * H, move, true);
+    Mat perspective21WithMatches = perspective21.clone();
+    drawCirclesWithDist(keyPs[0], keyPs[1], goodMatches, isInlier, perspective21WithMatches, move * H, move, true);
 
     Mat withMatches;
     drawMatches(imgs[0], keyPs[0], imgs[1], keyPs[1], goodMatches, withMatches);
 
-    imshow("With matches", scaleToFit(withMatches, 700));
-    int SPACE_KEY = 1048608;
-    while (true) {
-        imshow("Perspective", scaleToFit(perspective12, 1000));
-        if (waitKey() != SPACE_KEY) {
-            break;
+    imshow("Perspective 12", scaleToFit(perspective12WithMatches));
+    imshow("Perspective 21", scaleToFit(perspective21WithMatches));
+
+    Mat perspectiveWithBestPixels = mergeByBestContrast(imgs[0], imgs[1], move, H, perspectiveSAndMove.first);
+    Mat imgsToShow[] = {perspectiveWithBestPixels, perspective12, perspective21};
+    showImagesWithSwitching("Best contrast choosen", imgsToShow, 3);
+}
+
+Mat mergeByBestContrast(Mat img1, Mat img2, Mat move, Mat homography, Size perspectiveSize) {
+    Mat imgs[] = {img1, img2};
+    Mat imgsPersp[2];
+    Mat imgsPerspGrey[2];
+    Mat imgsContrastOnPanorama[2];
+    Mat imgsContrastMasks[2];
+    for (int i = 0; i < 2; i++) {
+        Mat imgGrey;
+        cvtColor(imgs[i], imgGrey, COLOR_RGB2GRAY);
+
+        Mat imgBlured;
+        GaussianBlur(imgGrey, imgBlured, Size(31, 31), 0, 0);
+
+        Mat imgContrast = imgGrey - imgBlured;
+        multiply(imgContrast, imgContrast, imgContrast);
+
+        imgsContrastOnPanorama[i] = Mat(perspectiveSize, CV_32FC1);
+        if (i == 0) {
+            warpPerspective(imgContrast, imgsContrastOnPanorama[0], move * homography, perspectiveSize, INTER_LINEAR, BORDER_CONSTANT, 0);
+            warpPerspective(imgs[i], imgsPersp[i], move * homography, perspectiveSize, INTER_LINEAR, BORDER_CONSTANT, 0);
+            warpPerspective(imgGrey, imgsPerspGrey[i], move * homography, perspectiveSize, INTER_LINEAR, BORDER_CONSTANT, 0);
+        } else {
+            warpPerspective(imgContrast, imgsContrastOnPanorama[1], move, perspectiveSize, INTER_LINEAR, BORDER_CONSTANT, 0);
+            warpPerspective(imgs[i], imgsPersp[i], move, perspectiveSize, INTER_LINEAR, BORDER_CONSTANT, 0);
+            warpPerspective(imgGrey, imgsPerspGrey[i], move, perspectiveSize, INTER_LINEAR, BORDER_CONSTANT, 0);
         }
-        imshow("Perspective", scaleToFit(perspective21, 1000));
-        if (waitKey() != SPACE_KEY) {
-            break;
+        GaussianBlur(imgsContrastOnPanorama[i], imgsContrastOnPanorama[i], Size(63, 63), 0, 0);
+
+        imgsContrastMasks[i] = Mat(imgsContrastOnPanorama[i].size(), imgsContrastOnPanorama[i].type());
+
+    }
+    for (int x = 0; x < imgsContrastOnPanorama[0].cols; x++) {
+        for (int y = 0; y < imgsContrastOnPanorama[0].rows; y++) {
+            if (imgsPerspGrey[1].at<uchar>(y, x) == 0) {
+                imgsContrastMasks[0].at<char>(y, x) = 255;
+            } else if (imgsPerspGrey[0].at<uchar>(y, x) == 0) {
+                imgsContrastMasks[1].at<char>(y, x) = 255;
+            } else if (imgsContrastOnPanorama[0].at<char>(y, x) > imgsContrastOnPanorama[1].at<char>(y, x)) {
+                imgsContrastMasks[0].at<char>(y, x) = 255;
+            } else {
+                imgsContrastMasks[1].at<char>(y, x) = 255;
+            }
         }
     }
+//    showImagesWithSwitching("test", imgsContrastMasks, 2);
+    Mat perspective(perspectiveSize, CV_32FC1);
+    for (int i = 0; i < 2; i++) {
+        Mat imgPersp(perspectiveSize, CV_32FC1);
+        imgsPersp[i].copyTo(perspective, imgsContrastMasks[i]);
+    }
+    return perspective;
 }
