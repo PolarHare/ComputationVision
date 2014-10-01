@@ -19,6 +19,11 @@ using namespace std;
 
 default_random_engine randomEngine(239);
 
+const int minMatches = 8;
+const int middleMatches = 30;
+const int orbPointsDefault = 1500;
+const float maxOutliers = 0.25f;
+
 float logCnk10(int n, int k) {
     assert (n >= k && n >= 0 && k >= 0);
     float res = 0.0f;
@@ -206,7 +211,12 @@ pair<M, vector<bool>> ransacContrario(vector<X> points, int minPointsCount,
             inliers.push_back(points[i]);
         }
     }
-    return pair<M, vector<bool>>(createModelFoo(inliers), isInlier);
+    int outliersCount = count(isInlier.begin(), isInlier.end(), false);
+    if (outliersCount > maxOutliers * points.size()) {
+        return pair<M, vector<bool>>(Mat(), isInlier);
+    } else {
+        return pair<M, vector<bool>>(createModelFoo(inliers), isInlier);
+    }
 }
 
 Mat findMyHomography(vector<Point2f> srcPoints, vector<Point2f> dstPoints) {
@@ -231,11 +241,11 @@ Mat findMyHomography(vector<Point2f> srcPoints, vector<Point2f> dstPoints) {
     return svd.vt.row(svd.vt.rows - 1).reshape(1, 3);
 }
 
-Mat drawCircles(vector<KeyPoint> ps, Mat img, Scalar color = Scalar(200, 100, 100), int radius = 4) {
+Mat drawCircles(vector<KeyPoint> ps, Mat img, Scalar color = Scalar(200, 100, 100), int radius = 4, int tickness = 1) {
     Mat res;
     img.copyTo(res);
     for (KeyPoint p : ps) {
-        circle(res, p.pt, radius, color, radius / 2, LINE_8);
+        circle(res, p.pt, radius, color, tickness, LINE_8);
     }
     return res;
 }
@@ -257,8 +267,8 @@ vector<Mat> loadAllImages(string folder = ".", string extension = ".jpg") {
             printf("File: %s", ent->d_name);
             string fileName = string(ent->d_name);
             if (hasEnding(fileName, extension)) {
+                printf(" is image %lu", imgFiles.size());
                 imgFiles.push_back(imread(folder + string("/") + fileName));
-                printf(" is image");
             }
             printf("\n");
         }
@@ -269,13 +279,15 @@ vector<Mat> loadAllImages(string folder = ".", string extension = ".jpg") {
     return imgFiles;
 }
 
-pair<vector<vector<KeyPoint>>, vector<Mat>> computeDescriptors(vector<Mat> imgs) {
-    ORB orb(1000);
+pair<vector<vector<KeyPoint>>, vector<Mat>> computeDescriptors(vector<Mat> imgs, int orbPoints = orbPointsDefault, bool silent = true) {
+    ORB orb(orbPoints);
     vector<vector<KeyPoint>> keyPss;
     for (int i = 0; i < imgs.size(); i++) {
         keyPss.push_back(vector<KeyPoint>());
         orb.detect(imgs[i], keyPss[i]);
-        cout << "Image" << i << " key points count: " << keyPss[i].size() << endl;
+        if (!silent) {
+            cout << "Image" << i << " key points count: " << keyPss[i].size() << endl;
+        }
     }
 
     vector<Mat> descrs;
@@ -295,7 +307,7 @@ vector<DMatch> findMatches(Mat descrs1, Mat descrs2, int i = -1, int j = -1) {
 
     vector<DMatch> goodMatches;
     for (vector<DMatch> match12 : matches) {
-        if (match12[0].distance < match12[1].distance * 0.7) {
+        if (match12[0].distance < match12[1].distance * 0.6) {
             goodMatches.push_back(match12[0]);
         }
     }
@@ -303,17 +315,68 @@ vector<DMatch> findMatches(Mat descrs1, Mat descrs2, int i = -1, int j = -1) {
     return goodMatches;
 }
 
+pair<Mat, vector<bool>> findHomographyACRansac(vector<DMatch> goodMatches, vector<KeyPoint> ps1, vector<KeyPoint> ps2, float wholeAreaImg2) {
+    pair<Mat, vector<bool>> homographyWithInliers = ransacContrario<DMatch, Mat>(goodMatches, 4,
+            [&ps1, &ps2](vector<DMatch> matches) -> Mat {
+                vector<Point2f> srcPoints;
+                vector<Point2f> dstPoints;
+                for (DMatch match : matches) {
+                    srcPoints.push_back(ps1[match.queryIdx].pt);
+                    dstPoints.push_back(ps2[match.trainIdx].pt);
+                }
+                return findMyHomography(srcPoints, dstPoints);
+            },
+            [&ps1, &ps2](Mat h, DMatch match) -> float {
+                Point2f p1 = ps1[match.queryIdx].pt;
+                Point2f p2 = ps2[match.trainIdx].pt;
+                float p1Data[] = {p1.x, p1.y, 1};
+                Mat m(3, 1, CV_32FC1, p1Data);
+                Mat p12m = h * m;
+                p12m *= 1 / p12m.at<float>(2, 0);
+                Point2f p12 = Point2f(p12m.at<float>(0, 0), p12m.at<float>(1, 0));
+                float dist = (float) norm(p2 - p12);
+                return dist;
+            },
+            HOMOGRAPHY_TASK,
+            wholeAreaImg2
+    );
+    return homographyWithInliers;
+}
+
+struct ImgNode {
+    int id;
+    Mat componentImage;
+    Mat toComponentTransformation;
+    Mat img;
+    vector<int> to = vector<int>();
+    vector<Mat> revHomo = vector<Mat>();
+    vector<Mat> transformations = vector<Mat>();
+
+    ImgNode() {
+    }
+
+    ImgNode(int id, Mat const &toComponentTransformation, Mat const &img)
+            : id(id),
+              toComponentTransformation(toComponentTransformation),
+              img(img) {
+    }
+};
+
+void drawComponents(ImgNode vector[], int n);
+
+void drawComponent(ImgNode vector[], bool pBoolean[], int i);
+
 int main(int argc, char **argv) {
     vector<Mat> imgs = loadAllImages();
 
-    pair<vector<vector<KeyPoint>>, vector<Mat>> pointsAndDescrs = computeDescriptors(imgs);
+    pair<vector<vector<KeyPoint>>, vector<Mat>> pointsAndDescrs = computeDescriptors(imgs, orbPointsDefault, false);
     vector<vector<KeyPoint>> keyPss = pointsAndDescrs.first;
     vector<Mat> descrs = pointsAndDescrs.second;
 
     unsigned long n = imgs.size();
     for (int i = 0; i < n; i++) {
-        Mat withCircles = drawCircles(keyPss[i], imgs[i], Scalar(200, 100, 100), 10);
-        imshow(to_string(i) + string(" with circles"), scaleToFit(withCircles, 200));
+        Mat withCircles = drawCircles(keyPss[i], imgs[i], Scalar(200, 100, 100), 10, 2);
+        imshow(to_string(i) + string(" with circles"), scaleToFit(withCircles, 400));
     }
 
     vector<DMatch> matches[n][n];
@@ -327,5 +390,164 @@ int main(int argc, char **argv) {
         }
     }
 
+    ImgNode nodes[n];
+    vector<int> showMatches = {};
+    vector<int> showPers = {};
+    for (int i = 0; i < n; i++) {
+//        Mat withCircles = drawCircles(keyPss[i], imgs[i], Scalar(200, 100, 100), 10);
+        nodes[i] = ImgNode(i, Mat(), imgs[i]);
+    }
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < i; j++) {
+            if (matches[i][j].size() < minMatches) {
+                if (matches[i][j].size() >= 5) {
+                    cout << i << "-" << j << " matches count is too low: " << matches[i][j].size() << endl;
+                }
+                continue;
+            }
+            if (matches[i][j].size() < middleMatches) {
+                pair<vector<vector<KeyPoint>>, vector<Mat>> betterPointsAndDescrs = computeDescriptors(vector<Mat>{imgs[i], imgs[j]}, orbPointsDefault * 2, true);
+                cout << " Increased points count (" << i << "-" << j << "): " << "i.keyPoints=" << betterPointsAndDescrs.first[0].size() << ", j.keyPoints=" << betterPointsAndDescrs.first[1].size() << endl;
+                keyPss[i] = betterPointsAndDescrs.first[0];
+                keyPss[j] = betterPointsAndDescrs.first[1];
+                descrs[i] = betterPointsAndDescrs.second[0];
+                descrs[j] = betterPointsAndDescrs.second[1];
+                long oldMatches = matches[i][j].size();
+                matches[i][j] = findMatches(descrs[i], descrs[j], i, j);
+                matches[j][i] = matches[i][j];
+                cout << " " << i << "-" << j << " matches count changed: " << oldMatches << "->" << matches[i][j].size() << endl;
+                if (matches[i][j].size() < 2.0f * oldMatches && matches[i][j].size() < middleMatches) {
+                    cout << "Didn't help!!!" << endl;
+                    continue;
+                }
+            }
+            Mat withMatches;
+            drawMatches(imgs[i], keyPss[i], imgs[j], keyPss[j], matches[i][j], withMatches);
+            if (find(showMatches.begin(), showMatches.end(), i) != showMatches.end()
+                    && find(showMatches.begin(), showMatches.end(), j) != showMatches.end()) {
+                imshow(to_string(i) + string("-") + to_string(j) + " matches (count=" + to_string(matches[i][j].size()) + ")",
+                        scaleToFit(withMatches, 300));
+            }
+
+            pair<Mat, vector<bool>> homographyWithInliers = findHomographyACRansac(matches[i][j], keyPss[i], keyPss[j], imgs[j].rows * imgs[j].cols);
+            Mat H = homographyWithInliers.first;
+            vector<bool> isInlier = homographyWithInliers.second;
+            long outliersCount = count(isInlier.begin(), isInlier.end(), false);
+            long inliersCount = count(isInlier.begin(), isInlier.end(), true);
+            if (H.empty()) {
+                cout << " Too many outliers in " << matches[i][j].size() << " matches " << i << "-" << j << ": outliersCount=" << outliersCount << endl;
+                continue;
+            }
+
+            pair<Size, Mat> perspectiveSAndMove = getPerspectiveSizeAndMovement(Size(imgs[i].cols, imgs[i].rows), Size(imgs[j].cols, imgs[j].rows), H);
+            cout << perspectiveSAndMove.first << endl;
+            if (perspectiveSAndMove.first.height * perspectiveSAndMove.first.width > 10000 * 10000) {
+                cout << "Too large perspective!!! " << perspectiveSAndMove.first << endl;
+                continue;
+            }
+            Mat perspective(perspectiveSAndMove.first, CV_32FC1);
+            Mat move = perspectiveSAndMove.second;
+            warpPerspective(imgs[j], perspective, move, perspective.size(), INTER_LINEAR, BORDER_CONSTANT, 0);
+            warpPerspective(imgs[i], perspective, move * H, perspective.size(), INTER_LINEAR, BORDER_TRANSPARENT, 0);
+            drawCirclesWithDist(keyPss[i], keyPss[j], matches[i][j], isInlier, perspective, move * H, move);
+
+            cout << i << "-" << j << " inliers/matches: " << inliersCount << "/" << matches[i][j].size() << endl;
+            nodes[i].to.push_back(j);
+            nodes[j].to.push_back(i);
+            nodes[i].revHomo.push_back(H.inv());
+            nodes[j].revHomo.push_back(H);
+        }
+    }
+
+    drawComponents(nodes, n);
     waitKey();
+}
+
+void drawComponents(ImgNode nodes[], int n) {
+    bool used[n];
+    for (int i = 0; i < n; i++) {
+        used[i] = false;
+    }
+    for (int iter = 0; iter < n; iter++) {
+        int maxI = -1;
+        for (int i = 0; i < n; i++) {
+            if (!used[i] && (maxI == -1 || nodes[i].to.size() >= nodes[maxI].to.size())) {
+                maxI = i;
+            }
+        }
+        if (maxI == -1) {
+            break;
+        }
+        drawComponent(nodes, used, maxI);
+    }
+}
+
+vector<int> drawComponent(ImgNode nodes[], bool used[], int cur, int prev, Mat prevH, int root) {
+    used[cur] = true;
+    Mat oldComponent = nodes[root].componentImage;
+//    imshow(to_string(prev) + " <- " + to_string(cur), scaleToFit(oldComponent));
+//    waitKey();
+
+    Mat H = nodes[prev].toComponentTransformation * prevH;
+    pair<Size, Mat> perspectiveSAndMove = getPerspectiveSizeAndMovement(
+            Size(nodes[cur].img.cols, nodes[cur].img.rows),
+            Size(nodes[root].componentImage.cols, nodes[root].componentImage.rows),
+            H);
+    nodes[root].componentImage = Mat(perspectiveSAndMove.first, CV_32FC1);
+    Mat move = perspectiveSAndMove.second;
+    warpPerspective(oldComponent, nodes[root].componentImage, move, nodes[root].componentImage.size(), INTER_LINEAR, BORDER_CONSTANT, 0);
+    warpPerspective(nodes[cur].img, nodes[root].componentImage, move * H, nodes[root].componentImage.size(), INTER_LINEAR, BORDER_TRANSPARENT, 0);
+    nodes[cur].toComponentTransformation = move * H;
+    nodes[root].transformations.push_back(move);
+//    imshow(to_string(prev) + " <- " + to_string(cur), scaleToFit(nodes[root].componentImage));
+//    waitKey();
+
+    vector<int> subComponentIndexes = {cur};
+    long wasRootTransormations = nodes[root].transformations.size();
+    for (int i = 0; i < nodes[cur].to.size(); i++) {
+        int to = nodes[cur].to[i];
+        Mat revH = nodes[cur].revHomo[i];
+        if (!used[to]) {
+            vector<int> v = drawComponent(nodes, used, to, cur, revH, root);
+            for (int vi : v) {
+                subComponentIndexes.push_back(vi);
+            }
+        }
+        for (int i = wasRootTransormations; i < nodes[root].transformations.size(); i++) {
+            nodes[cur].toComponentTransformation = nodes[root].transformations[i] * nodes[cur].toComponentTransformation;
+        }
+        wasRootTransormations = nodes[root].transformations.size();
+    }
+    return subComponentIndexes;
+}
+
+void drawComponent(ImgNode nodes[], bool used[], int cur) {
+    used[cur] = true;
+    nodes[cur].componentImage = nodes[cur].img;
+    nodes[cur].toComponentTransformation = Mat::eye(3, 3, CV_32FC1);
+    vector<int> imgs = {cur};
+    long wasRootTransormations = nodes[cur].transformations.size();
+    for (int i = 0; i < nodes[cur].to.size(); i++) {
+        int to = nodes[cur].to[i];
+        Mat revH = nodes[cur].revHomo[i];
+        if (!used[to]) {
+            vector<int> v = drawComponent(nodes, used, to, cur, revH, cur);
+            for (int vi : v) {
+                imgs.push_back(vi);
+            }
+        }
+        for (int i = wasRootTransormations; i < nodes[cur].transformations.size(); i++) {
+            nodes[cur].toComponentTransformation = nodes[cur].transformations[i] * nodes[cur].toComponentTransformation;
+        }
+        wasRootTransormations = nodes[cur].transformations.size();
+    }
+    string indexes = to_string(cur);
+    for (int i = 1; i < imgs.size(); i++) {
+        indexes += ", " + to_string(imgs[i]);
+    }
+    if (imgs.size() > 1) {
+        imshow(indexes, scaleToFit(nodes[cur].componentImage, 800));
+    } else {
+        imshow(indexes, scaleToFit(nodes[cur].componentImage, 300));
+    }
 }
