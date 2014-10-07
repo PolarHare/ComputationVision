@@ -134,7 +134,7 @@ enum RANSAC_TASK {
     HOMOGRAPHY_TASK
 };
 
-Mat mergeByBestContrast(Mat img1, Mat img2, Mat move, Mat homography, Size perspectiveSize);
+Mat multiBandBlending(Mat img1, Mat img2, Mat move, Mat homography, Size perspectiveSize);
 
 template<typename X>
 vector<X> takeRandomValues(vector<X> values, int n) {
@@ -365,60 +365,50 @@ int main(int argc, char **argv) {
     imshow("Perspective 12", scaleToFit(perspective12WithMatches));
     imshow("Perspective 21", scaleToFit(perspective21WithMatches));
 
-    Mat perspectiveWithBestPixels = mergeByBestContrast(imgs[0], imgs[1], move, H, perspectiveSAndMove.first);
+    Mat perspectiveWithBestPixels = multiBandBlending(imgs[0], imgs[1], move, H, perspectiveSAndMove.first);
     Mat imgsToShow[] = {perspectiveWithBestPixels, perspective12, perspective21};
     showImagesWithSwitching("Best contrast choosen", imgsToShow, 3);
 }
 
-Mat mergeByBestContrast(Mat img1, Mat img2, Mat move, Mat homography, Size perspectiveSize) {
+Mat createLinearWeightMap(Size size) {
+    Mat w(size, CV_32FC1);
+    for (int r = 0; r < w.rows; r++) {
+        for (int c = 0; c < w.cols; c++) {
+            w.at<float>(r, c) = (1.0f - abs(r * 2.0f - w.rows) / w.rows)
+                    * (1.0f - abs(c * 2.0f - w.cols) / w.cols);
+        }
+    }
+    return w;
+}
+
+Mat multiBandBlending(Mat img1, Mat img2, Mat move, Mat homography, Size perspectiveSize) {
     Mat imgs[] = {img1, img2};
-    Mat imgsPersp[2];
-    Mat imgsPerspGrey[2];
-    Mat imgsContrastOnPanorama[2];
-    Mat imgsContrastMasks[2];
+    Mat transform[] = {move * homography, move};
+    Mat w[2];
+    Mat wPersp[2];
+    Mat wMaxPerspIndex;
+    Mat wMaxPersp[2];
     for (int i = 0; i < 2; i++) {
-        Mat imgGrey;
-        cvtColor(imgs[i], imgGrey, COLOR_RGB2GRAY);
-
-        Mat imgBlured;
-        GaussianBlur(imgGrey, imgBlured, Size(31, 31), 0, 0);
-
-        Mat imgContrast = imgGrey - imgBlured;
-        multiply(imgContrast, imgContrast, imgContrast);
-
-        imgsContrastOnPanorama[i] = Mat(perspectiveSize, CV_32FC1);
-        if (i == 0) {
-            warpPerspective(imgContrast, imgsContrastOnPanorama[0], move * homography, perspectiveSize, INTER_LINEAR, BORDER_CONSTANT, 0);
-            warpPerspective(imgs[i], imgsPersp[i], move * homography, perspectiveSize, INTER_LINEAR, BORDER_CONSTANT, 0);
-            warpPerspective(imgGrey, imgsPerspGrey[i], move * homography, perspectiveSize, INTER_LINEAR, BORDER_CONSTANT, 0);
-        } else {
-            warpPerspective(imgContrast, imgsContrastOnPanorama[1], move, perspectiveSize, INTER_LINEAR, BORDER_CONSTANT, 0);
-            warpPerspective(imgs[i], imgsPersp[i], move, perspectiveSize, INTER_LINEAR, BORDER_CONSTANT, 0);
-            warpPerspective(imgGrey, imgsPerspGrey[i], move, perspectiveSize, INTER_LINEAR, BORDER_CONSTANT, 0);
-        }
-        GaussianBlur(imgsContrastOnPanorama[i], imgsContrastOnPanorama[i], Size(63, 63), 0, 0);
-
-        imgsContrastMasks[i] = Mat(imgsContrastOnPanorama[i].size(), imgsContrastOnPanorama[i].type());
-
+        w[i] = createLinearWeightMap(Size(imgs[i].cols, imgs[i].rows));
+        wPersp[i] = Mat(perspectiveSize, CV_32FC1);
+        wMaxPersp[i] = Mat(perspectiveSize, CV_32FC1);
+        warpPerspective(w[i], wPersp[i], transform[i], perspectiveSize, INTER_LINEAR, BORDER_CONSTANT, 0);
     }
-    for (int x = 0; x < imgsContrastOnPanorama[0].cols; x++) {
-        for (int y = 0; y < imgsContrastOnPanorama[0].rows; y++) {
-            if (imgsPerspGrey[1].at<uchar>(y, x) == 0) {
-                imgsContrastMasks[0].at<char>(y, x) = 255;
-            } else if (imgsPerspGrey[0].at<uchar>(y, x) == 0) {
-                imgsContrastMasks[1].at<char>(y, x) = 255;
-            } else if (imgsContrastOnPanorama[0].at<char>(y, x) > imgsContrastOnPanorama[1].at<char>(y, x)) {
-                imgsContrastMasks[0].at<char>(y, x) = 255;
-            } else {
-                imgsContrastMasks[1].at<char>(y, x) = 255;
+    wMaxPerspIndex = Mat(perspectiveSize, CV_32FC1);
+    for (int r = 0; r < perspectiveSize.height; r++) {
+        for (int c = 0; c < perspectiveSize.width; c++) {
+            float maxW = 0;
+            int maxI = -1;
+            for (int i = 0; i < 2; i++) {
+                if (wPersp[i].at<float>(r, c) >= maxW) {
+                    maxW = wPersp[i].at<float>(r, c);
+                    maxI = i;
+                }
             }
+            wMaxPersp[maxI].at<float>(r, c) = 1.0f;
+            wMaxPerspIndex.at<int>(r, c) = maxI;
         }
     }
-//    showImagesWithSwitching("test", imgsContrastMasks, 2);
-    Mat perspective(perspectiveSize, CV_32FC1);
-    for (int i = 0; i < 2; i++) {
-        Mat imgPersp(perspectiveSize, CV_32FC1);
-        imgsPersp[i].copyTo(perspective, imgsContrastMasks[i]);
-    }
-    return perspective;
+
+    return wMaxPersp[1]*255;
 }

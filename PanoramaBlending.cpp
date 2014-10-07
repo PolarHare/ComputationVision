@@ -33,7 +33,7 @@ float logCnk10(int n, int k) {
     return res;
 }
 
-void printPlot(const char *name, vector<float> values, int width = 700, int height = 700) {
+void drawPlot(const char *name, vector<float> values, int width = 700, int height = 700) {
     int offsetW = 2;
     int offsetH = 2;
     width -= 2 * offsetW;
@@ -258,7 +258,7 @@ bool hasEnding(std::string const &fullString, std::string const &ending) {
     }
 }
 
-vector<Mat> loadAllImages(string folder = ".", string extension = ".jpg") {
+vector<Mat> loadAllImages(int IMREAD_flag = IMREAD_COLOR, string folder = ".", string extension = ".jpg") {
     vector<Mat> imgFiles;
     DIR *dir;
     struct dirent *ent;
@@ -268,7 +268,7 @@ vector<Mat> loadAllImages(string folder = ".", string extension = ".jpg") {
             string fileName = string(ent->d_name);
             if (hasEnding(fileName, extension)) {
                 printf(" is image %lu", imgFiles.size());
-                imgFiles.push_back(imread(folder + string("/") + fileName));
+                imgFiles.push_back(imread(folder + string("/") + fileName, IMREAD_flag));
             }
             printf("\n");
         }
@@ -279,21 +279,21 @@ vector<Mat> loadAllImages(string folder = ".", string extension = ".jpg") {
     return imgFiles;
 }
 
-pair<vector<vector<KeyPoint>>, vector<Mat>> computeDescriptors(vector<Mat> imgs, int orbPoints = orbPointsDefault, bool silent = true) {
+pair<vector<vector<KeyPoint>>, vector<Mat>> computeDescriptors(vector<Mat> imgsForPs, vector<Mat> imgsForDescrs, int orbPoints = orbPointsDefault, bool silent = true) {
     ORB orb(orbPoints);
     vector<vector<KeyPoint>> keyPss;
-    for (int i = 0; i < imgs.size(); i++) {
+    for (int i = 0; i < imgsForPs.size(); i++) {
         keyPss.push_back(vector<KeyPoint>());
-        orb.detect(imgs[i], keyPss[i]);
+        orb.detect(imgsForPs[i], keyPss[i]);
         if (!silent) {
             cout << "Image" << i << " key points count: " << keyPss[i].size() << endl;
         }
     }
 
     vector<Mat> descrs;
-    for (int i = 0; i < imgs.size(); i++) {
+    for (int i = 0; i < imgsForDescrs.size(); i++) {
         descrs.push_back(Mat());
-        orb.compute(imgs[i], keyPss[i], descrs[i]);
+        orb.compute(imgsForDescrs[i], keyPss[i], descrs[i]);
     }
     return pair<vector<vector<KeyPoint>>, vector<Mat>>(keyPss, descrs);
 }
@@ -366,14 +366,23 @@ void drawComponents(ImgNode vector[], int n);
 
 void drawComponent(ImgNode vector[], bool pBoolean[], int i);
 
+void calcRadius(int n, ImgNode nodes[], int pInt[]);
+
+vector<DMatch> findOverlapingMatchesByVoting(vector<DMatch> matches, vector<KeyPoint> keyPss1, vector<KeyPoint> keyPss2, Size2i size1, Size2i size2, int traceI = -1, int traceJ = -1);
+
 int main(int argc, char **argv) {
     vector<Mat> imgs = loadAllImages();
+    vector<Mat> imgsGray = loadAllImages(IMREAD_GRAYSCALE);
+    unsigned long n = imgsGray.size();
 
-    pair<vector<vector<KeyPoint>>, vector<Mat>> pointsAndDescrs = computeDescriptors(imgs, orbPointsDefault, false);
+    for (int i = 0; i < n; i++) {
+        createCLAHE()->apply(imgsGray[i], imgsGray[i]);
+    }
+
+    pair<vector<vector<KeyPoint>>, vector<Mat>> pointsAndDescrs = computeDescriptors(imgs, imgs, orbPointsDefault, false);
     vector<vector<KeyPoint>> keyPss = pointsAndDescrs.first;
     vector<Mat> descrs = pointsAndDescrs.second;
 
-    unsigned long n = imgs.size();
     for (int i = 0; i < n; i++) {
         Mat withCircles = drawCircles(keyPss[i], imgs[i], Scalar(200, 100, 100), 10, 2);
         imshow(to_string(i) + string(" with circles"), scaleToFit(withCircles, 400));
@@ -391,7 +400,7 @@ int main(int argc, char **argv) {
     }
 
     ImgNode nodes[n];
-    vector<int> showMatches = {};
+    vector<int> showMatches = {14, 7};
     vector<int> showPers = {};
     for (int i = 0; i < n; i++) {
 //        Mat withCircles = drawCircles(keyPss[i], imgs[i], Scalar(200, 100, 100), 10);
@@ -406,7 +415,8 @@ int main(int argc, char **argv) {
                 continue;
             }
             if (matches[i][j].size() < middleMatches) {
-                pair<vector<vector<KeyPoint>>, vector<Mat>> betterPointsAndDescrs = computeDescriptors(vector<Mat>{imgs[i], imgs[j]}, orbPointsDefault * 2, true);
+                pair<vector<vector<KeyPoint>>, vector<Mat>> betterPointsAndDescrs =
+                        computeDescriptors(vector<Mat>{imgs[i], imgs[j]}, vector<Mat>{imgs[i], imgs[j]}, orbPointsDefault * 2, true);
                 cout << " Increased points count (" << i << "-" << j << "): " << "i.keyPoints=" << betterPointsAndDescrs.first[0].size() << ", j.keyPoints=" << betterPointsAndDescrs.first[1].size() << endl;
                 keyPss[i] = betterPointsAndDescrs.first[0];
                 keyPss[j] = betterPointsAndDescrs.first[1];
@@ -421,13 +431,16 @@ int main(int argc, char **argv) {
                     continue;
                 }
             }
-            Mat withMatches;
-            drawMatches(imgs[i], keyPss[i], imgs[j], keyPss[j], matches[i][j], withMatches);
             if (find(showMatches.begin(), showMatches.end(), i) != showMatches.end()
                     && find(showMatches.begin(), showMatches.end(), j) != showMatches.end()) {
+                Mat withMatches;
+                drawMatches(imgs[i], keyPss[i], imgs[j], keyPss[j], matches[i][j], withMatches);
                 imshow(to_string(i) + string("-") + to_string(j) + " matches (count=" + to_string(matches[i][j].size()) + ")",
-                        scaleToFit(withMatches, 300));
+                        scaleToFit(withMatches, 800));
             }
+
+            vector<DMatch> matchesByVoting = findOverlapingMatchesByVoting(matches[i][j], keyPss[i], keyPss[j],
+                    Size(imgs[i].cols, imgs[i].rows), Size(imgs[j].cols, imgs[j].rows), i, j);
 
             pair<Mat, vector<bool>> homographyWithInliers = findHomographyACRansac(matches[i][j], keyPss[i], keyPss[j], imgs[j].rows * imgs[j].cols);
             Mat H = homographyWithInliers.first;
@@ -463,15 +476,72 @@ int main(int argc, char **argv) {
     waitKey();
 }
 
+float angleBetween(Point v1, Point v2) {
+    float dy = v2.y - v1.y;
+    float dx = v2.x - v1.x;
+    return atan2(dy, dx);
+}
+
+vector<DMatch> findOverlapingMatchesByVoting(vector<DMatch> matches, vector<KeyPoint> keyPss1, vector<KeyPoint> keyPss2, Size2i size1, Size2i size2, int traceI, int traceJ) {
+    long n = matches.size();
+    const int degreesBuckets = 360;
+    int degreesVotes[degreesBuckets];
+    for (int i = 0; i < degreesBuckets; i++) {
+        degreesVotes[i] = 0;
+    }
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < i; j++) {
+            DMatch m1 = matches[i];
+            DMatch m2 = matches[j];
+            float a1 = angleBetween(keyPss1[m1.queryIdx].pt, keyPss1[m2.queryIdx].pt);
+            float a2 = angleBetween(keyPss2[m1.trainIdx].pt, keyPss2[m2.trainIdx].pt);
+            float angle = (a2 - a1) + PI;
+            if (angle > 2 * PI) {
+                angle -= 2 * PI;
+            }
+            if (angle < 0) {
+                angle += 2 * PI;
+            }
+            int id = (int) (angle * degreesBuckets / (2 * PI));
+            assert (id >= 0 && id < degreesBuckets);
+            degreesVotes[id]++;
+        }
+    }
+    int biggestB = -1;
+    int secondBiggestB = -1;
+    for (int i = 0; i < degreesBuckets; i++) {
+        if (biggestB == -1 ||
+                (degreesVotes[i] > degreesVotes[biggestB]
+                        && degreesVotes[i - 1] < degreesVotes[i]
+                        && degreesVotes[(i + 1) % degreesBuckets] < degreesVotes[i])) {
+            secondBiggestB = biggestB;
+            biggestB = i;
+        }
+    }
+    if (degreesVotes[biggestB] <= degreesVotes[secondBiggestB] * 1.5) {
+        cout << "Voting for angle failed! Biggest: " << degreesVotes[biggestB] << ", " << degreesVotes[secondBiggestB]
+                << ". i=" << traceI << ", j=" << traceJ << endl;
+        return vector<DMatch>();
+    }
+//    vector<float> values(degreesBuckets);
+//    for (int i = 0; i < degreesBuckets; i++) {
+//        values.push_back(degreesVotes[i]);
+//    }
+//    printPlot((to_string(traceI) + "-" + to_string(traceJ) + " angle gistogram").data(), values);
+    return vector<DMatch>();
+}
+
 void drawComponents(ImgNode nodes[], int n) {
     bool used[n];
     for (int i = 0; i < n; i++) {
         used[i] = false;
     }
+    int dist[n];
+    calcRadius(n, nodes, dist);
     for (int iter = 0; iter < n; iter++) {
         int maxI = -1;
         for (int i = 0; i < n; i++) {
-            if (!used[i] && (maxI == -1 || nodes[i].to.size() >= nodes[maxI].to.size())) {
+            if (!used[i] && (maxI == -1 || (dist[i] > dist[maxI] || (dist[i] == dist[maxI] && nodes[i].to.size() >= nodes[maxI].to.size())))) {
                 maxI = i;
             }
         }
@@ -479,6 +549,39 @@ void drawComponents(ImgNode nodes[], int n) {
             break;
         }
         drawComponent(nodes, used, maxI);
+    }
+}
+
+void calcRadius(int n, ImgNode nodes[], int dist[]) {
+    int q[n];
+    bool used[n];
+    for (int i = 0; i < n; i++) {
+        used[i] = false;
+    }
+    int next = 0;
+    int last = -1;
+    for (int i = 0; i < n; i++) {
+        ImgNode node = nodes[i];
+        if (node.to.size() <= 1) {
+            q[last++] = node.id;
+            dist[node.id] = 0;
+            used[node.id] = true;
+        }
+    }
+    while (next < last) {
+        int i = q[next++];
+        for (int j : nodes[i].to) {
+            if (!used[j]) {
+                used[j] = true;
+                q[last++] = j;
+                dist[j] = dist[i] + 1;
+            }
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        if (!used[i]) {
+            dist[i] = -1;
+        }
     }
 }
 

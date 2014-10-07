@@ -27,7 +27,7 @@ float logCnk10(int n, int k) {
     return res;
 }
 
-void printPlot(const char* name, vector<float> values, int width = 700, int height = 700) {
+void drawPlot(const char *name, vector<float> values, int width = 700, int height = 700) {
     int offsetW = 2;
     int offsetH = 2;
     width -= 2 * offsetW;
