@@ -42,21 +42,30 @@
 #include "ceres/ceres.h"
 #include "ceres/rotation.h"
 #include "include/saveMesh.hpp"
+#include "ceres/autodiff_cost_function.h"
+
+using ceres::CostFunction;
+using ceres::SizedCostFunction;
+using ceres::Jet;
 
 // Templated pinhole camera model for used with Ceres.  The camera is
 // parameterized using 9 parameters: 3 for rotation, 3 for translation, 1 for
 // focal length and 2 for radial distortion. The principal point is not modeled
 // (i.e. it is assumed be located at the image center).
-struct SnavelyReprojectionError {
+struct SnavelyReprojectionError
+        : public SizedCostFunction<2, 9, 3> {
+public:
     SnavelyReprojectionError(double observed_x, double observed_y)
-            : observed_x(observed_x), observed_y(observed_y) {}
+            : observed_x(observed_x), observed_y(observed_y) {
+    }
 
-    template <typename T>
-    bool operator()(const T* const camera,
-            const T* const point,
-            T* residuals) const {
+    virtual bool Evaluate(double const *const *parameters,
+            double *residuals,
+            double **jacobians) const {
+        double const *const camera = parameters[0];
+        double const *const point = parameters[1];
         // camera[0,1,2] are the angle-axis rotation.
-        T p[3];
+        double p[3];
         ceres::AngleAxisRotatePoint(camera, point, p);
 
         // camera[3,4,5] are the translation.
@@ -67,40 +76,81 @@ struct SnavelyReprojectionError {
         // Compute the center of distortion. The sign change comes from
         // the camera model that Noah Snavely's Bundler assumes, whereby
         // the camera coordinate system has a negative z axis.
-        T xp = - p[0] / p[2];
-        T yp = - p[1] / p[2];
+        double xp = -p[0] / p[2];
+        double yp = -p[1] / p[2];
 
         // Apply second and fourth order radial distortion.
-        const T& l1 = camera[7];
-        const T& l2 = camera[8];
-        T r2 = xp*xp + yp*yp;
-        T distortion = T(1.0) + r2  * (l1 + l2  * r2);
+        const double &l1 = camera[7];
+        const double &l2 = camera[8];
+        double r2 = xp * xp + yp * yp;
+        double distortion = 1.0 + r2 * (l1 + l2 * r2);
 
         // Compute final projected point position.
-        const T& focal = camera[6];
-        T predicted_x = focal * distortion * xp;
-        T predicted_y = focal * distortion * yp;
+        const double &focal = camera[6];
+        double predicted_x = focal * distortion * xp;
+        double predicted_y = focal * distortion * yp;
 
         // The error is the difference between the predicted and observed position.
-        residuals[0] = predicted_x - T(observed_x);
-        residuals[1] = predicted_y - T(observed_y);
+        residuals[0] = predicted_x - observed_x;
+        residuals[1] = predicted_y - observed_y;
+
+        if (jacobians != NULL
+                && (jacobians[0] != NULL || jacobians[1] != NULL)) {
+            Jet<double, 12> cameraJ[9];
+            for (int i = 0; i < 9; i++) {
+                cameraJ[i] = Jet<double, 12>(camera[i], i);
+            }
+            Jet<double, 12> pointJ[3];
+            for (int i = 0; i < 3; i++) {
+                pointJ[i] = Jet<double, 12>(point[i], 9 + i);
+            }
+            Jet<double, 12> pJ[3];
+            ceres::AngleAxisRotatePoint(cameraJ, pointJ, pJ);
+
+            pJ[0] += cameraJ[3];
+            pJ[1] += cameraJ[4];
+            pJ[2] += cameraJ[5];
+
+            Jet<double, 12> xpJ = -pJ[0] / pJ[2];
+            Jet<double, 12> ypJ = -pJ[1] / pJ[2];
+
+            Jet<double, 12> l1J = cameraJ[7];
+            Jet<double, 12> l2J = cameraJ[8];
+
+            Jet<double, 12> r2J = xpJ * xpJ + ypJ * ypJ;
+            Jet<double, 12> distortionJ = Jet<double, 12>(1.0) + r2J * (l1J + l2J * r2J);
+
+            Jet<double, 12> focalJ = cameraJ[6];
+            Jet<double, 12> predicted_xJ = focalJ * distortionJ * xpJ;
+            Jet<double, 12> predicted_yJ = focalJ * distortionJ * ypJ;
+
+            if (jacobians[0] != NULL) {
+                for (int i = 0; i < 9; i++) {
+                    jacobians[0][i] = predicted_xJ.v[i];
+                }
+                for (int i = 0; i < 9; i++) {
+                    jacobians[0][9 + i] = predicted_yJ.v[i];
+                }
+            }
+
+            if (jacobians[1] != NULL) {
+                for (int i = 9; i < 12; i++) {
+                    jacobians[1][i - 9] = predicted_xJ.v[i];
+                }
+                for (int i = 9; i < 12; i++) {
+                    jacobians[1][3 + i - 9] = predicted_yJ.v[i];
+                }
+            }
+        }
 
         return true;
-    }
-
-    // Factory to hide the construction of the CostFunction object from
-    // the client code.
-    static ceres::CostFunction* Create(const double observed_x,
-            const double observed_y) {
-        return (new ceres::AutoDiffCostFunction<SnavelyReprojectionError, 2, 9, 3>(
-                new SnavelyReprojectionError(observed_x, observed_y)));
     }
 
     double observed_x;
     double observed_y;
 };
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
     google::InitGoogleLogging(argv[0]);
     if (argc != 4) {
         std::cerr << "usage: simple_bundle_adjuster <bal_problem> <bal_problem_init_ply> <bal_problem_result_ply>\n";
@@ -115,7 +165,7 @@ int main(int argc, char** argv) {
 
     bal_problem.saveToPlyFile(argv[2]);
 
-    const double* observations = bal_problem.observations();
+    const double *observations = bal_problem.observations();
 
     // Create residuals for each observation in the bundle adjustment problem. The
     // parameters for cameras and points are added automatically.
@@ -125,9 +175,7 @@ int main(int argc, char** argv) {
         // dimensional residual. Internally, the cost function stores the observed
         // image location and compares the reprojection against the observation.
 
-        ceres::CostFunction* cost_function =
-                SnavelyReprojectionError::Create(observations[2 * i + 0],
-                        observations[2 * i + 1]);
+        ceres::CostFunction *cost_function = new SnavelyReprojectionError(observations[2 * i + 0], observations[2 * i + 1]);
         problem.AddResidualBlock(cost_function,
                 NULL /* squared loss */,
                 bal_problem.mutable_camera_for_observation(i),
