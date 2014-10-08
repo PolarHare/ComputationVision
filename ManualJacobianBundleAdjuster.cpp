@@ -127,8 +127,6 @@ public:
             if (jacobians[0] != NULL) {
                 for (int i = 0; i < 9; i++) {
                     jacobians[0][i] = predicted_xJ.v[i];
-                }
-                for (int i = 0; i < 9; i++) {
                     jacobians[0][9 + i] = predicted_yJ.v[i];
                 }
             }
@@ -136,8 +134,6 @@ public:
             if (jacobians[1] != NULL) {
                 for (int i = 9; i < 12; i++) {
                     jacobians[1][i - 9] = predicted_xJ.v[i];
-                }
-                for (int i = 9; i < 12; i++) {
                     jacobians[1][3 + i - 9] = predicted_yJ.v[i];
                 }
             }
