@@ -66,7 +66,18 @@ public:
         double const *const point = parameters[1];
         // camera[0,1,2] are the angle-axis rotation.
         double p[3];
-        ceres::AngleAxisRotatePoint(camera, point, p);
+
+        double data[9] = {0};
+        ceres::MatrixAdapter<double, 3, 1> rotationMatrix(data);
+        ceres::AngleAxisToRotationMatrix<double>(camera, rotationMatrix);
+
+        double rotatedPoint[3] = {0};
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                rotatedPoint[i] += data[3 * i + j] * point[j];
+            }
+            p[i] = rotatedPoint[i];
+        }
 
         // camera[3,4,5] are the translation.
         p[0] += camera[3];
