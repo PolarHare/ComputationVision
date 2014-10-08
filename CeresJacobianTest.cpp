@@ -21,6 +21,7 @@ using ceres::Problem;
 using ceres::Solver;
 using ceres::Solve;
 using ceres::CauchyLoss;
+using ceres::SizedCostFunction;
 
 Mat drawPoints(Mat img, vector<Point2f> points, Scalar color,
         float fromX = -10, float toX = 10, float fromY = -10, float toY = 10) {
@@ -90,14 +91,30 @@ double mySin(double x, double a, double b, double c) {
     return a * sin(b * x + c);
 }
 
-struct SinResidual {
-    SinResidual(double x, double y)
+// A CostFunction implementing analytically derivatives for the
+// function f(x) = a * sin(b * x + c)
+class QuadraticCostFunction
+        : public SizedCostFunction<1, 3> {
+public:
+    QuadraticCostFunction(double x, double y)
             : x_(x), y_(y) {
     }
 
-    template<typename T>
-    bool operator()(const T *const p, T *residual) const {
-        residual[0] = T(y_) - p[0] * sin(p[1] * T(x_) + p[2]);
+    virtual ~QuadraticCostFunction() {
+    }
+
+    virtual bool Evaluate(double const *const *parameters,
+            double *residuals,
+            double **jacobians) const {
+        double a = parameters[0][0];
+        double b = parameters[0][1];
+        double c = parameters[0][2];
+        residuals[0] = a * sin(b * x_ + c) - y_;
+        if (jacobians != NULL && jacobians[0] != NULL) {
+            jacobians[0][0] = sin(b * x_ + c);
+            jacobians[0][1] = a * cos(b * x_ + c) * x_;
+            jacobians[0][2] = a * cos(b * x_ + c);
+        }
         return true;
     }
 
@@ -124,8 +141,7 @@ int main(int argc, char **argv) {
     double cur[] = {1, 1, 1};
     Problem problem;
     for (int i = 0; i < points.size(); ++i) {
-        CostFunction *cost_function =
-                new AutoDiffCostFunction<SinResidual, 1, 3>(new SinResidual(points[i].x, points[i].y));
+        CostFunction *cost_function = new QuadraticCostFunction(points[i].x, points[i].y);
         problem.AddResidualBlock(cost_function, NULL, cur);
     }
     Solver::Options options;
@@ -143,7 +159,7 @@ int main(int argc, char **argv) {
 
 
     vector<Point2f> randomData = generateRandomPoints(1000);
-    Mat imgFooWithAllPoints = drawPoints(imgFooWithPoints, randomData, Scalar(255, 100, 255));
+    Mat imgFooWithAllPoints = imgFooWithPoints;//drawPoints(imgFooWithPoints, randomData, Scalar(255, 100, 255));
     imshow("Target function with all points", imgFooWithAllPoints);
     vector<Point2f> allPoints;
     for (int i = 0; i < points.size(); ++i) {
@@ -158,9 +174,8 @@ int main(int argc, char **argv) {
 
     Problem problem2;
     for (int i = 0; i < allPoints.size(); ++i) {
-        CostFunction *cost_function =
-                new AutoDiffCostFunction<SinResidual, 1, 3>(new SinResidual(allPoints[i].x, allPoints[i].y));
-        problem2.AddResidualBlock(cost_function, new CauchyLoss(0.5), cur2);
+        CostFunction *cost_function = new QuadraticCostFunction(points[i].x, points[i].y);
+        problem2.AddResidualBlock(cost_function, NULL, cur2);
     }
     Solver::Options options2;
     options.linear_solver_type = ceres::DENSE_QR;
