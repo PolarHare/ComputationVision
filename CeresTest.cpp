@@ -109,6 +109,9 @@ private:
 int main(int argc, char **argv) {
     google::InitGoogleLogging(argv[0]);
 
+    const int pointsCount = 1000000;
+    const int pointsOutliersCount = 10000;
+
     float a = 4.2;
     float b = 0.7;
     float c = 2;
@@ -116,7 +119,7 @@ int main(int argc, char **argv) {
         return mySin(x, a, b, c);
     };
 
-    vector<Point2f> points = generateNoisedPoints(foo, 10000);
+    vector<Point2f> points = generateNoisedPoints(foo, pointsCount);
     Mat imgFooWithPoints = drawFunction(foo);
     imgFooWithPoints = drawPoints(imgFooWithPoints, points, Scalar(100, 100, 255));
     imshow("Target function with points", imgFooWithPoints);
@@ -142,7 +145,7 @@ int main(int argc, char **argv) {
     imshow("Result function", imgWithResultFoo);
 
 
-    vector<Point2f> randomData = generateRandomPoints(1000);
+    vector<Point2f> randomData = generateRandomPoints(pointsOutliersCount);
     Mat imgFooWithAllPoints = drawPoints(imgFooWithPoints, randomData, Scalar(255, 100, 255));
     imshow("Target function with all points", imgFooWithAllPoints);
     vector<Point2f> allPoints;

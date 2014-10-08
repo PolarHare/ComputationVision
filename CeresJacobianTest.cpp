@@ -126,6 +126,9 @@ private:
 int main(int argc, char **argv) {
     google::InitGoogleLogging(argv[0]);
 
+    const int pointsCount = 1000000;
+    const int pointsOutliersCount = 10000;
+
     float a = 4.2;
     float b = 0.7;
     float c = 2;
@@ -133,7 +136,7 @@ int main(int argc, char **argv) {
         return mySin(x, a, b, c);
     };
 
-    vector<Point2f> points = generateNoisedPoints(foo, 10000);
+    vector<Point2f> points = generateNoisedPoints(foo, pointsCount);
     Mat imgFooWithPoints = drawFunction(foo);
     imgFooWithPoints = drawPoints(imgFooWithPoints, points, Scalar(100, 100, 255));
     imshow("Target function with points", imgFooWithPoints);
@@ -158,7 +161,7 @@ int main(int argc, char **argv) {
     imshow("Result function", imgWithResultFoo);
 
 
-    vector<Point2f> randomData = generateRandomPoints(1000);
+    vector<Point2f> randomData = generateRandomPoints(pointsOutliersCount);
     Mat imgFooWithAllPoints = imgFooWithPoints;//drawPoints(imgFooWithPoints, randomData, Scalar(255, 100, 255));
     imshow("Target function with all points", imgFooWithAllPoints);
     vector<Point2f> allPoints;
@@ -174,7 +177,7 @@ int main(int argc, char **argv) {
 
     Problem problem2;
     for (int i = 0; i < allPoints.size(); ++i) {
-        CostFunction *cost_function = new QuadraticCostFunction(points[i].x, points[i].y);
+        CostFunction *cost_function = new QuadraticCostFunction(allPoints[i].x, allPoints[i].y);
         problem2.AddResidualBlock(cost_function, NULL, cur2);
     }
     Solver::Options options2;
