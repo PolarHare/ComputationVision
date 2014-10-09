@@ -43,10 +43,39 @@
 #include "ceres/rotation.h"
 #include "include/saveMesh.hpp"
 #include "ceres/autodiff_cost_function.h"
+#include "ceres/types.h"
 
 using ceres::CostFunction;
 using ceres::SizedCostFunction;
 using ceres::Jet;
+using ceres::CallbackReturnType;
+using ceres::IterationSummary;
+
+class IterationRotationMatrixInit
+        : public ceres::IterationCallback {
+
+private:
+    double const *const  camera;
+
+public:
+    double* data;
+
+    void updateData() {
+        ceres::MatrixAdapter<double, 3, 1> rotationMatrix(data);
+        ceres::AngleAxisToRotationMatrix<double>(camera, rotationMatrix);
+    }
+
+    IterationRotationMatrixInit(double const *const camera) : camera(camera) {
+        data = new double[9];
+        updateData();
+    }
+
+    CallbackReturnType operator()(const IterationSummary &summary) {
+        updateData();
+        return ceres::SOLVER_CONTINUE;
+    };
+
+};
 
 // Templated pinhole camera model for used with Ceres.  The camera is
 // parameterized using 9 parameters: 3 for rotation, 3 for translation, 1 for
@@ -55,8 +84,9 @@ using ceres::Jet;
 struct SnavelyReprojectionError
         : public SizedCostFunction<2, 9, 3> {
 public:
-    SnavelyReprojectionError(double observed_x, double observed_y)
-            : observed_x(observed_x), observed_y(observed_y) {
+
+    SnavelyReprojectionError(IterationRotationMatrixInit *rotationMatrixPrecalc, double observed_x, double observed_y)
+            : rotationMatrixPrecalc(rotationMatrixPrecalc), observed_x(observed_x), observed_y(observed_y) {
     }
 
     virtual bool Evaluate(double const *const *parameters,
@@ -64,17 +94,12 @@ public:
             double **jacobians) const {
         double const *const camera = parameters[0];
         double const *const point = parameters[1];
-        // camera[0,1,2] are the angle-axis rotation.
         double p[3];
-
-        double data[9] = {0};
-        ceres::MatrixAdapter<double, 3, 1> rotationMatrix(data);
-        ceres::AngleAxisToRotationMatrix<double>(camera, rotationMatrix);
 
         double rotatedPoint[3] = {0};
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
-                rotatedPoint[i] += data[3 * i + j] * point[j];
+                rotatedPoint[i] += rotationMatrixPrecalc->data[3 * i + j] * point[j];
             }
             p[i] = rotatedPoint[i];
         }
@@ -153,6 +178,7 @@ public:
         return true;
     }
 
+    IterationRotationMatrixInit* rotationMatrixPrecalc;
     double observed_x;
     double observed_y;
 };
@@ -174,15 +200,19 @@ int main(int argc, char **argv) {
 
     const double *observations = bal_problem.observations();
 
+    IterationRotationMatrixInit* rotationMatrixPrecalcs[bal_problem.num_observations()];
+
     // Create residuals for each observation in the bundle adjustment problem. The
     // parameters for cameras and points are added automatically.
     ceres::Problem problem;
     for (int i = 0; i < bal_problem.num_observations(); ++i) {
+        rotationMatrixPrecalcs[i] = new IterationRotationMatrixInit(bal_problem.mutable_camera_for_observation(i));
+
         // Each Residual block takes a point and a camera as input and outputs a 2
         // dimensional residual. Internally, the cost function stores the observed
         // image location and compares the reprojection against the observation.
 
-        ceres::CostFunction *cost_function = new SnavelyReprojectionError(observations[2 * i + 0], observations[2 * i + 1]);
+        ceres::CostFunction *cost_function = new SnavelyReprojectionError(rotationMatrixPrecalcs[i], observations[2 * i + 0], observations[2 * i + 1]);
         problem.AddResidualBlock(cost_function,
                 NULL /* squared loss */,
                 bal_problem.mutable_camera_for_observation(i),
@@ -195,6 +225,9 @@ int main(int argc, char **argv) {
     ceres::Solver::Options options;
     options.linear_solver_type = ceres::DENSE_SCHUR;
     options.minimizer_progress_to_stdout = true;
+    for (int i = 0; i < bal_problem.num_observations(); ++i) {
+        options.callbacks.push_back(rotationMatrixPrecalcs[i]);
+    }
 
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
