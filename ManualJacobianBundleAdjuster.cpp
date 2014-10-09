@@ -37,6 +37,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <vector>
 #include <iostream>
 
 #include "ceres/ceres.h"
@@ -51,22 +52,38 @@ using ceres::Jet;
 using ceres::CallbackReturnType;
 using ceres::IterationSummary;
 
+using std::vector;
+
 class IterationRotationMatrixInit
         : public ceres::IterationCallback {
 
 private:
-    double const *const  camera;
+    int cameraInd;
+    double const *const camera;
+    Jet<double, 12> *cameraJ;
 
 public:
-    double* data;
+    double *data;
+    Jet<double, 12> *dataJ;
 
     void updateData() {
+        for (int j = 0; j < 9; j++) {
+            cameraJ[j] = Jet<double, 12>(camera[j], j);
+        }
+
         ceres::MatrixAdapter<double, 3, 1> rotationMatrix(data);
         ceres::AngleAxisToRotationMatrix<double>(camera, rotationMatrix);
+
+        ceres::MatrixAdapter<Jet<double, 12>, 3, 1> rotationMatrixJ(dataJ);
+        ceres::AngleAxisToRotationMatrix<Jet<double, 12>, 3, 1>(cameraJ, rotationMatrixJ);
     }
 
-    IterationRotationMatrixInit(double const *const camera) : camera(camera) {
+    IterationRotationMatrixInit(BALProblem &problem, int cameraIndex)
+            : camera(problem.mutable_cameras() + 9 * cameraIndex),
+              cameraInd(cameraIndex) {
+        cameraJ = new Jet<double, 12>[9];
         data = new double[9];
+        dataJ = new Jet<double, 12>[9];
         updateData();
     }
 
@@ -81,12 +98,15 @@ public:
 // parameterized using 9 parameters: 3 for rotation, 3 for translation, 1 for
 // focal length and 2 for radial distortion. The principal point is not modeled
 // (i.e. it is assumed be located at the image center).
+
+static bool flag = true;
+
 struct SnavelyReprojectionError
         : public SizedCostFunction<2, 9, 3> {
 public:
 
-    SnavelyReprojectionError(IterationRotationMatrixInit *rotationMatrixPrecalc, double observed_x, double observed_y)
-            : rotationMatrixPrecalc(rotationMatrixPrecalc), observed_x(observed_x), observed_y(observed_y) {
+    SnavelyReprojectionError(int id, IterationRotationMatrixInit &rotationMatrixPrecalc, double observed_x, double observed_y)
+            : id(id), rotationMatrixPrecalc(rotationMatrixPrecalc), observed_x(observed_x), observed_y(observed_y) {
     }
 
     virtual bool Evaluate(double const *const *parameters,
@@ -94,14 +114,12 @@ public:
             double **jacobians) const {
         double const *const camera = parameters[0];
         double const *const point = parameters[1];
-        double p[3];
+        double p[3] = {0};
 
-        double rotatedPoint[3] = {0};
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
-                rotatedPoint[i] += rotationMatrixPrecalc->data[3 * i + j] * point[j];
+                p[i] += rotationMatrixPrecalc.data[3 * i + j] * point[j];
             }
-            p[i] = rotatedPoint[i];
         }
 
         // camera[3,4,5] are the translation.
@@ -141,7 +159,11 @@ public:
                 pointJ[i] = Jet<double, 12>(point[i], 9 + i);
             }
             Jet<double, 12> pJ[3];
-            ceres::AngleAxisRotatePoint(cameraJ, pointJ, pJ);
+            for (int i = 0; i < 3; i++) {
+                for (int j = 0; j < 3; j++) {
+                    pJ[i] += rotationMatrixPrecalc.dataJ[3 * i + j] * pointJ[j];
+                }
+            }
 
             pJ[0] += cameraJ[3];
             pJ[1] += cameraJ[4];
@@ -178,7 +200,8 @@ public:
         return true;
     }
 
-    IterationRotationMatrixInit* rotationMatrixPrecalc;
+    int id;
+    IterationRotationMatrixInit &rotationMatrixPrecalc;
     double observed_x;
     double observed_y;
 };
@@ -200,22 +223,28 @@ int main(int argc, char **argv) {
 
     const double *observations = bal_problem.observations();
 
-    IterationRotationMatrixInit* rotationMatrixPrecalcs[bal_problem.num_observations()];
+    vector<IterationRotationMatrixInit> rotationMatrixPrecalcs;
+    for (int i = 0; i < bal_problem.num_cameras(); i++) {
+        rotationMatrixPrecalcs.push_back(IterationRotationMatrixInit(bal_problem, i));
+    }
 
     // Create residuals for each observation in the bundle adjustment problem. The
     // parameters for cameras and points are added automatically.
     ceres::Problem problem;
     for (int i = 0; i < bal_problem.num_observations(); ++i) {
-        rotationMatrixPrecalcs[i] = new IterationRotationMatrixInit(bal_problem.mutable_camera_for_observation(i));
 
         // Each Residual block takes a point and a camera as input and outputs a 2
         // dimensional residual. Internally, the cost function stores the observed
         // image location and compares the reprojection against the observation.
 
-        ceres::CostFunction *cost_function = new SnavelyReprojectionError(rotationMatrixPrecalcs[i], observations[2 * i + 0], observations[2 * i + 1]);
+        ceres::CostFunction *cost_function = new SnavelyReprojectionError(
+                i,
+                rotationMatrixPrecalcs[bal_problem.camera_index_for_observation(i)],
+                observations[2 * i + 0],
+                observations[2 * i + 1]);
         problem.AddResidualBlock(cost_function,
                 NULL /* squared loss */,
-                bal_problem.mutable_camera_for_observation(i),
+                bal_problem.mutable_cameras() + 9 * bal_problem.camera_index_for_observation(i),
                 bal_problem.mutable_point_for_observation(i));
     }
 
@@ -225,8 +254,9 @@ int main(int argc, char **argv) {
     ceres::Solver::Options options;
     options.linear_solver_type = ceres::DENSE_SCHUR;
     options.minimizer_progress_to_stdout = true;
-    for (int i = 0; i < bal_problem.num_observations(); ++i) {
-        options.callbacks.push_back(rotationMatrixPrecalcs[i]);
+    options.update_state_every_iteration = true;
+    for (int i = 0; i < bal_problem.num_cameras(); ++i) {
+        options.callbacks.push_back(&rotationMatrixPrecalcs[i]);
     }
 
     ceres::Solver::Summary summary;

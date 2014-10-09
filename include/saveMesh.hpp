@@ -9,6 +9,9 @@ public:
     double* mutable_cameras();
     double* mutable_points();
 
+    int num_cameras() const;
+    int camera_index_for_observation(int i) const;
+
     double* mutable_camera_for_observation(int i);
     double* mutable_point_for_observation(int i);
 

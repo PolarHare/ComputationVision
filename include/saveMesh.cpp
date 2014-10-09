@@ -32,6 +32,14 @@ double *BALProblem::mutable_points() {
     return parameters_ + 9 * num_cameras_;
 }
 
+int BALProblem::num_cameras() const {
+    return num_cameras_;
+}
+
+int BALProblem::camera_index_for_observation(int i) const {
+    return camera_index_[i];
+}
+
 double *BALProblem::mutable_camera_for_observation(int i) {
     return mutable_cameras() + camera_index_[i] * 9;
 }
