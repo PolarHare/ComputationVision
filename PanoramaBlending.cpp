@@ -495,14 +495,14 @@ vector<DMatch> findOverlapingMatchesByVoting(vector<DMatch> matches, vector<KeyP
             DMatch m2 = matches[j];
             float a1 = angleBetween(keyPss1[m1.queryIdx].pt, keyPss1[m2.queryIdx].pt);
             float a2 = angleBetween(keyPss2[m1.trainIdx].pt, keyPss2[m2.trainIdx].pt);
-            float angle = (a2 - a1) + PI;
-            if (angle > 2 * PI) {
-                angle -= 2 * PI;
+            float angle = (a2 - a1) + M_PI;
+            if (angle > 2 * M_PI) {
+                angle -= 2 * M_PI;
             }
             if (angle < 0) {
-                angle += 2 * PI;
+                angle += 2 * M_PI;
             }
-            int id = (int) (angle * degreesBuckets / (2 * PI));
+            int id = (int) (angle * degreesBuckets / (2 * M_PI));
             assert (id >= 0 && id < degreesBuckets);
             degreesVotes[id]++;
         }
