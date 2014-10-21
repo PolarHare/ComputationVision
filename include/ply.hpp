@@ -23,4 +23,4 @@ public:
 
 PlyMesh loadPlyBinary(const char *filename);
 
-PlyMesh savePlyBinary(PlyMesh const& mesh, const char *filename);
+void savePlyBinary(PlyMesh const& mesh, const char *filename);

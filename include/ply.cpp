@@ -36,7 +36,7 @@ PlyMesh loadPlyBinary(const char *filename) {
     return mesh;
 }
 
-PlyMesh savePlyBinary(PlyMesh const &mesh, const char *filename) {
+void savePlyBinary(PlyMesh const &mesh, const char *filename) {
     FILE *fp = fopen(filename, "w");
     if (fp == NULL) {
         throw -1;
@@ -64,5 +64,4 @@ PlyMesh savePlyBinary(PlyMesh const &mesh, const char *filename) {
         fwrite(mesh.faces + i * 3, sizeof(unsigned int), 3, fp);
     }
     fclose(fp);
-    return mesh;
 }
